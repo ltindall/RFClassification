@@ -15,25 +15,18 @@ from gamutrf.utils import parse_filename
 
 
 class GamutRFDataset(torch.utils.data.Dataset): 
-    def __init__(self, label_dirs, sample_secs=0.02, nfft=1024, feat='spec', transform=None, idx_to_class=None):
-        self.feat=feat
+    def __init__(self, label_dirs, sample_secs=0.02, nfft=1024, transform=None):
+        
         self.sample_secs = sample_secs
         self.nfft = nfft
-
-        feat_str = "spectrograms" if feat == "spec" else "IQ"
-        print(f"\nGenerating {feat_str} from {self.sample_secs} second chunks of signal data with {self.nfft} length FFTs.")
-        print("\nLoading filenames...")
         labeled_filenames = self.labeled_files(label_dirs)
-        print(f"{labeled_filenames=}")
-        print("\nLoading data...")
         self.idx = self.idx_info(labeled_filenames, sample_secs)
-
-        self.idx_to_class = idx_to_class
-        if self.idx_to_class is None: 
-            unique_labels = sorted(list(set(self.idx[:,0])))
-            self.idx_to_class = {i:lbl for i,lbl in enumerate(unique_labels)}
-        self.class_to_idx = {c: i for i, c in self.idx_to_class.items()}
-
+ 
+        unique_labels = sorted(list(set(self.idx[:,0])))
+        self.unique_labels = unique_labels
+        self.class_to_idx = {lbl:i for i,lbl in enumerate(self.unique_labels)}
+        self.idx_to_class = {i:lbl for i,lbl in enumerate(self.unique_labels)}
+        
         self.cmap = plt.get_cmap('jet')
         
         self.transform = transform
@@ -48,55 +41,36 @@ class GamutRFDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, i):
         
+        print(f"{len(self.idx)=}")
         label_str = self.idx[i,0]
         filename = self.idx[i,1]
         byte_offset = self.idx[i,2]
-        
         
         # parse filename and get samples 
         start = timer()
         freq_center, sample_rate, sample_dtype, sample_bytes, sample_type, sample_bits = parse_filename(filename)
         start = timer()
-        filename = self.get_full_file(filename)
         samples = self.read_recording(filename, sample_rate, sample_dtype, sample_bytes, self.sample_secs, seek_bytes=byte_offset)
         #print(f"read_recording() time = {timer()-start}")
         # get spectrogram using scipy.signal.spectrogram()
         
         #win_type='hann'
-        if self.feat == 'spec':
-            f, t, S = signal.spectrogram(samples, sample_rate, window=signal.hann(self.nfft, sym=False), nperseg=self.nfft, detrend='constant', return_onesided=False) 
-            f = np.fft.fftshift(f)
-            S = np.fft.fftshift(S, axes=0)
-            S = 10 * np.log10(S) # dB scale transform
-
-            # normalize spectrogram (0 to 1) 
-            S_norm = (S-np.min(S))/(np.max(S) - np.min(S))
-
-            rgba_img = self.cmap(S_norm)
-            rgb_img = np.delete(rgba_img, 3, 2)
-
-            #data = np.float32(np.moveaxis(rgb_img, -1, 0))
-            data = self.transform(np.float32(rgb_img))
-        elif self.feat == 'iq':
-            # return as 2 x N matrix 
-            samp2 = np.empty((2,len(samples)))
-            samp2[0,:] = samples.real
-            samp2[1,:] = samples.imag
-            # normalize
-            #samp2 = (samp2-np.min(samp2))/(np.max(samp2) - np.min(samp2))
-            data = torch.tensor(np.float32(samp2))
-            
+        f, t, S = signal.spectrogram(samples, sample_rate, window=signal.hann(self.nfft, sym=False), nperseg=self.nfft, detrend='constant', return_onesided=False) 
+        f = np.fft.fftshift(f)
+        S = np.fft.fftshift(S, axes=0)
+        S = 10 * np.log10(S) # dB scale transform
+        
+        # normalize spectrogram (0 to 1) 
+        S_norm = (S-np.min(S))/(np.max(S) - np.min(S))
+        
+        rgba_img = self.cmap(S_norm)
+        rgb_img = np.delete(rgba_img, 3, 2)
+        
+        #data = np.float32(np.moveaxis(rgb_img, -1, 0))
+        data = self.transform(np.float32(rgb_img))
         label = torch.tensor(self.class_to_idx[label_str])
         return data, label
     
-    def class_counts(self, indices=None): 
-        class_counts = {k:0 for k in self.class_to_idx}
-        if indices is None: 
-            indices = range(len(self.idx))
-        for i in indices:
-            class_counts[self.idx[i,0]] += 1
-        return class_counts
-
     def labeled_files(self, label_dirs): 
         labeled_filenames = {}
         for label, label_dir in label_dirs.items(): 
@@ -115,31 +89,24 @@ class GamutRFDataset(torch.utils.data.Dataset):
         idx = []
 
         for label, valid_files in labeled_filenames.items(): 
-            for i,full_filename in enumerate(tqdm(valid_files)):
+            for i,full_filename in enumerate(tqdm(valid_files)): 
                 idx_filename = full_filename+f"_{str(sample_secs)}.npy"
                 if os.path.exists(idx_filename): 
                     start = timer()
-                    file_idx = np.load(idx_filename)
-                    print(file_idx)
-                    if file_idx.shape[1] == 3: 
-                        file_idx[:,0] = label
-                    else: 
-                        file_idx = np.hstack((np.array([[label] for _ in range(file_idx.shape[0])]),file_idx))
-                    #print(f"loading {idx_filename}; {i}/{len(valid_files)} time = {timer()-start}")
+                    file_idx = np.load(idx_filename).tolist()
+                    print(f"loading {idx_filename}; {i}/{len(valid_files)} time = {timer()-start}")
                 else: 
                     file_idx = []
                     freq_center, sample_rate, sample_dtype, sample_len, sample_type, sample_bits = parse_filename(full_filename)
                     start = timer()
-                    reader = get_reader(full_filename)
-                    with reader(full_filename) as infile:
-                        #infile = zstandard.ZstdDecompressor().stream_reader(open(full_filename, 'rb'))
-                        while True: 
-                            start_byte = infile.tell()
-                            sample_buffer = infile.read(int(sample_rate * sample_secs) * sample_len)
-                            buffered_samples = int(len(sample_buffer) / sample_len)
-                            if buffered_samples != int(sample_rate*sample_secs):
-                                break
-                            file_idx.append([full_filename, start_byte])
+                    infile = zstandard.ZstdDecompressor().stream_reader(open(full_filename, 'rb'))
+                    while True: 
+                        start_byte = infile.tell()
+                        sample_buffer = infile.read(int(sample_rate * sample_secs) * sample_len)
+                        buffered_samples = int(len(sample_buffer) / sample_len)
+                        if buffered_samples != int(sample_rate*sample_secs):
+                            break
+                        file_idx.append([label, full_filename, start_byte])
                     np.save(idx_filename, file_idx)
                     print(f"saving {idx_filename}; {i}/{len(valid_files)} time = {timer()-start}")
                 idx.extend(file_idx)
@@ -445,9 +412,3 @@ class GamutRFDataset(torch.utils.data.Dataset):
             x1d = np.frombuffer(sample_buffer, dtype=sample_dtype,
                                 count=buffered_samples)
             return x1d['i'] + np.csingle(1j) * x1d['q']
-        
-        
-    def get_full_file(self, filename):
-        if filename.split('/')[0] == 'data':
-            filename = '/home/ltindall/'+filename
-        return filename

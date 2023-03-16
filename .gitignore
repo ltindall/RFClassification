@@ -1,0 +1,8 @@
+.vscode
+*.npy
+__pycache__
+.python-version
+build
+*.zip
+gamutRF/.ipynb_checkpoints/
+.ipynb_checkpoints/
