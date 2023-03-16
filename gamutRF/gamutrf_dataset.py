@@ -15,18 +15,20 @@ from gamutrf.utils import parse_filename
 
 
 class GamutRFDataset(torch.utils.data.Dataset): 
-    def __init__(self, label_dirs, sample_secs=0.02, nfft=1024, feat='spec', transform=None, idx_to_class=None):
+    def __init__(self, label_dirs, sample_secs=0.02, nfft=1024, feat="spec", transform=None, idx_to_class=None, cmap="jet"):
         self.feat=feat
         self.sample_secs = sample_secs
         self.nfft = nfft
 
         feat_str = "spectrograms" if feat == "spec" else "IQ"
         print(f"\nGenerating {feat_str} from {self.sample_secs} second chunks of signal data with {self.nfft} length FFTs.")
+        
         print("\nLoading filenames...")
         labeled_filenames = self.labeled_files(label_dirs)
         print(f"{labeled_filenames=}")
+
         print("\nLoading data...")
-        self.idx = self.idx_info(labeled_filenames, sample_secs)
+        self.idx = self.dataset_byte_offset(labeled_filenames, sample_secs)
 
         self.idx_to_class = idx_to_class
         if self.idx_to_class is None: 
@@ -34,7 +36,7 @@ class GamutRFDataset(torch.utils.data.Dataset):
             self.idx_to_class = {i:lbl for i,lbl in enumerate(unique_labels)}
         self.class_to_idx = {c: i for i, c in self.idx_to_class.items()}
 
-        self.cmap = plt.get_cmap('jet')
+        self.cmap = plt.get_cmap(cmap)
         
         self.transform = transform
         if self.transform is None: 
@@ -98,6 +100,15 @@ class GamutRFDataset(torch.utils.data.Dataset):
         return class_counts
 
     def labeled_files(self, label_dirs): 
+        """
+        Reads label directories and returns associated list of filenames.
+
+        Parameters:
+        label_dirs (dict): Dictionary of labels and associated directories.
+
+        Returns:
+        dict: Dictionary of labels and associated list of filenames. 
+        """
         labeled_filenames = {}
         for label, label_dir in label_dirs.items(): 
             label_dir = list(label_dir) if type(label_dir) is not list else label_dir
@@ -111,7 +122,17 @@ class GamutRFDataset(torch.utils.data.Dataset):
 
         return labeled_filenames
 
-    def idx_info(self, labeled_filenames, sample_secs = 0.02): 
+    def dataset_byte_offset(self, labeled_filenames, sample_secs = 0.02): 
+        """
+        Create dataset by dividing sample files into appropriate time chunks. 
+
+        Parameters:
+        labeled_filenames (dict): Dictionary of labels and associated list of filenames.
+        sample_secs (int): Seconds for each sample chunk. 
+
+        Returns:
+        list: Dataset in list format; each row is (label, filename, byte offset).  
+        """
         idx = []
 
         for label, valid_files in labeled_filenames.items(): 
